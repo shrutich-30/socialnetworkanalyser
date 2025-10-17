@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Social Network Relationship Analyzer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-slate-900">Social Network Analyzer</h1>
+            <p class="mt-2 text-lg text-slate-600">Model relationships as relations and test their properties (POSETs & Equivalence).</p>
+        </header>
+
+        <!-- Main Content Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-8">
+
+            <!-- Left Column: Controls & Results -->
+            <div class="lg:col-span-2 space-y-8">
+                
+                <!-- Input Card -->
+                <div class="bg-white p-6 rounded-2xl shadow-lg">
+                    <h2 class="text-2xl font-semibold mb-4">1. Define Relationships</h2>
+                    <p class="text-sm text-slate-500 mb-4">Enter one directed relationship per line, like `Alice, Bob` for (Alice → Bob). Names are case-sensitive.</p>
+                    <textarea id="relations-input" class="w-full h-48 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition" placeholder="Alice, Bob&#10;Bob, Alice&#10;Bob, Charlie&#10;Charlie, Bob&#10;David, Alice"></textarea>
+                    <div class="flex items-center space-x-4 mt-4">
+                        <button id="analyze-btn" class="w-full bg-sky-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 transition-transform transform hover:scale-105">
+                            Analyze & Visualize
+                        </button>
+                        <button id="add-self-loops" title="Add a self-loop (e.g., Alice, Alice) for every unique person. This is required for reflexivity." class="flex-shrink-0 bg-slate-200 text-slate-700 font-semibold py-3 px-4 rounded-lg hover:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-400 transition">
+                            Add Self-Loops
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Results Card -->
+                <div id="results-card" class="bg-white p-6 rounded-2xl shadow-lg hidden">
+                    <h2 class="text-2xl font-semibold mb-4">2. Analysis Results</h2>
+                    <div id="results-output" class="space-y-4"></div>
+                </div>
+
+            </div>
+
+            <!-- Right Column: Visualization -->
+            <div class="lg:col-span-3">
+                 <div class="bg-white p-6 rounded-2xl shadow-lg h-full">
+                    <h2 class="text-2xl font-semibold mb-4">Network Visualization</h2>
+                     <div class="aspect-square w-full bg-slate-100 rounded-lg relative">
+                        <canvas id="network-canvas" class="absolute inset-0"></canvas>
+                        <div id="canvas-placeholder" class="absolute inset-0 flex items-center justify-center text-slate-400">
+                            <p>Your network graph will appear here.</p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-2 text-center">Click and drag nodes to rearrange the graph.</p>
+                 </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const relationsInput = document.getElementById('relations-input');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const addSelfLoopsBtn = document.getElementById('add-self-loops');
+        const resultsOutput = document.getElementById('results-output');
+        const resultsCard = document.getElementById('results-card');
+        const canvas = document.getElementById('network-canvas');
+        const canvasPlaceholder = document.getElementById('canvas-placeholder');
+        const ctx = canvas.getContext('2d');
+
+        let nodes = [];
+        let edges = [];
+        let graphNodes = [];
+        let simulation;
+        
+        // --- VISUALIZATION & SIMULATION ---
+        const NODE_RADIUS = 20;
+        let draggingNode = null;
+        let offsetX = 0;
+        let offsetY = 0;
+        
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+            if (simulation) draw();
+        }
+
+        class ForceSimulation {
+            constructor(nodes) {
+                this.nodes = nodes.map(n => ({ ...n })); // Deep copy
+                this.alpha = 1;
+                this.alphaMin = 0.001;
+                this.alphaDecay = 1 - Math.pow(this.alphaMin, 1 / 300);
+
+                // Simulation parameters
+                this.forces = {
+                    charge: -400,
+                    linkDistance: 120,
+                    centerGravity: 0.1
+                };
+            }
+
+            tick() {
+                // Apply forces
+                // 1. Link force (spring)
+                edges.forEach(edge => {
+                    const source = this.nodes.find(n => n.id === edge.source);
+                    const target = this.nodes.find(n => n.id === edge.target);
+                    if (!source || !target) return;
+
+                    const dx = target.x - source.x;
+                    const dy = target.y - source.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy) + 1e-6;
+                    const force = (distance - this.forces.linkDistance) / distance * 0.1;
+                    
+                    const fx = dx * force;
+                    const fy = dy * force;
+                    
+                    source.vx += fx;
+                    source.vy += fy;
+                    target.vx -= fx;
+                    target.vy -= fy;
+                });
+
+                // 2. Charge force (repulsion)
+                for (let i = 0; i < this.nodes.length; i++) {
+                    for (let j = i + 1; j < this.nodes.length; j++) {
+                        const nodeA = this.nodes[i];
+                        const nodeB = this.nodes[j];
+                        const dx = nodeB.x - nodeA.x;
+                        const dy = nodeB.y - nodeA.y;
+                        const distanceSq = dx * dx + dy * dy + 1e-6;
+                        const force = this.forces.charge / distanceSq;
+                        
+                        const fx = dx * force;
+                        const fy = dy * force;
+
+                        nodeA.vx += fx;
+                        nodeA.vy += fy;
+                        nodeB.vx -= fx;
+                        nodeB.vy -= fy;
+                    }
+                }
+                
+                // 3. Center gravity
+                this.nodes.forEach(node => {
+                    node.vx += (canvas.width / 2 - node.x) * this.forces.centerGravity * this.alpha;
+                    node.vy += (canvas.height / 2 - node.y) * this.forces.centerGravity * this.alpha;
+                });
+
+
+                // Update positions
+                this.nodes.forEach(node => {
+                    if (node === draggingNode) return;
+                    node.vx *= 0.6; // Damping
+                    node.vy *= 0.6; // Damping
+                    node.x += node.vx;
+                    node.y += node.vy;
+
+                    // Boundary collision
+                    node.x = Math.max(NODE_RADIUS, Math.min(canvas.width - NODE_RADIUS, node.x));
+                    node.y = Math.max(NODE_RADIUS, Math.min(canvas.height - NODE_RADIUS, node.y));
+                });
+                
+                this.alpha *= this.alphaDecay;
+            }
+        }
+        
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (!simulation) return;
+
+            // Draw edges
+            edges.forEach(edge => {
+                const source = simulation.nodes.find(n => n.id === edge.source);
+                const target = simulation.nodes.find(n => n.id === edge.target);
+                 if (!source || !target) return;
+
+                ctx.beginPath();
+                ctx.moveTo(source.x, source.y);
+
+                if (source.id === target.id) { // Self-loop
+                    const loopRadius = NODE_RADIUS * 0.8;
+                    ctx.arc(source.x - loopRadius, source.y - loopRadius, loopRadius, Math.PI / 4, (Math.PI * 7) / 4);
+                    ctx.strokeStyle = 'rgba(100, 116, 139, 0.5)';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                    // Arrow for self-loop
+                    const angle = Math.PI / 4 + 0.1;
+                    const arrowX = source.x - loopRadius + Math.cos(angle) * loopRadius;
+                    const arrowY = source.y - loopRadius + Math.sin(angle) * loopRadius;
+                    drawArrowhead(ctx, arrowX, arrowY, angle + Math.PI/2, 'rgba(100, 116, 139, 0.5)');
+                } else {
+                    const dx = target.x - source.x;
+                    const dy = target.y - source.y;
+                    const angle = Math.atan2(dy, dx);
+                    const targetX = target.x - Math.cos(angle) * NODE_RADIUS;
+                    const targetY = target.y - Math.sin(angle) * NODE_RADIUS;
+                    
+                    ctx.lineTo(targetX, targetY);
+                    ctx.strokeStyle = 'rgba(100, 116, 139, 0.5)';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                    drawArrowhead(ctx, targetX, targetY, angle, 'rgba(100, 116, 139, 0.5)');
+                }
+            });
+
+            // Draw nodes
+            simulation.nodes.forEach(node => {
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, NODE_RADIUS, 0, 2 * Math.PI);
+                ctx.fillStyle = (node === draggingNode) ? '#0284c7' : '#0ea5e9';
+                ctx.fill();
+                ctx.strokeStyle = '#f8fafc';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '12px Inter';
+                ctx.fillText(node.id, node.x, node.y);
+            });
+        }
+        
+        function drawArrowhead(context, x, y, angle, color) {
+            const size = 8;
+            context.save();
+            context.beginPath();
+            context.translate(x, y);
+            context.rotate(angle);
+            context.moveTo(0, 0);
+            context.lineTo(-size, -size / 2);
+            context.lineTo(-size, size / 2);
+            context.closePath();
+            context.fillStyle = color;
+            context.fill();
+            context.restore();
+        }
+
+        function animate() {
+            if (!simulation || simulation.alpha < simulation.alphaMin) return;
+            simulation.tick();
+            draw();
+            requestAnimationFrame(animate);
+        }
+
+        // Mouse events for dragging
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            if (!simulation) return;
+
+            for (let i = simulation.nodes.length - 1; i >= 0; i--) {
+                const node = simulation.nodes[i];
+                const dx = mouseX - node.x;
+                const dy = mouseY - node.y;
+                if (dx * dx + dy * dy < NODE_RADIUS * NODE_RADIUS) {
+                    draggingNode = node;
+                    offsetX = dx;
+                    offsetY = dy;
+                    simulation.alpha = Math.max(simulation.alpha, 0.3); // Reheat simulation
+                    animate();
+                    break;
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (draggingNode) {
+                const rect = canvas.getBoundingClientRect();
+                draggingNode.x = e.clientX - rect.left - offsetX;
+                draggingNode.y = e.clientY - rect.top - offsetY;
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            draggingNode = null;
+        });
+        canvas.addEventListener('mouseout', () => {
+             draggingNode = null;
+        });
+
+
+        // --- ANALYSIS LOGIC ---
+        
+        function parseInput() {
+            const text = relationsInput.value.trim();
+            const lines = text.split('\n').filter(line => line.trim() !== '');
+            const uniqueNodes = new Set();
+            const parsedEdges = new Set();
+
+            lines.forEach(line => {
+                const parts = line.split(',').map(p => p.trim());
+                if (parts.length === 2 && parts[0] && parts[1]) {
+                    uniqueNodes.add(parts[0]);
+                    uniqueNodes.add(parts[1]);
+                    parsedEdges.add(`${parts[0]}->${parts[1]}`);
+                }
+            });
+
+            nodes = Array.from(uniqueNodes);
+            edges = Array.from(parsedEdges).map(edgeStr => {
+                const [source, target] = edgeStr.split('->');
+                return { source, target };
+            });
+        }
+
+        function createResultItem(title, success, message) {
+            const icon = success 
+                ? `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`
+                : `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`;
+            
+            return `
+                <div class="p-4 rounded-lg ${success ? 'bg-green-50' : 'bg-red-50'}">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">${icon}</div>
+                        <div class="ml-3">
+                            <h3 class="text-md font-semibold ${success ? 'text-green-800' : 'text-red-800'}">${title}</h3>
+                            <p class="text-sm mt-1 ${success ? 'text-green-700' : 'text-red-700'}">${message}</p>
+                        </div>
+                    </div>
+                </div>`;
+        }
+        
+        function isReflexive() {
+            for (const node of nodes) {
+                if (!edges.some(e => e.source === node && e.target === node)) {
+                    return { success: false, message: `Fails because node <strong>${node}</strong> does not have a self-loop (e.g., ${node}, ${node}).` };
+                }
+            }
+            return { success: true, message: "Holds true. Every person is related to themself." };
+        }
+
+        function isSymmetric() {
+            for (const edge of edges) {
+                if (edge.source === edge.target) continue;
+                if (!edges.some(e => e.source === edge.target && e.target === edge.source)) {
+                     return { success: false, message: `Fails because the relation <strong>(${edge.source} → ${edge.target})</strong> exists, but <strong>(${edge.target} → ${edge.source})</strong> does not.` };
+                }
+            }
+            return { success: true, message: "Holds true. Every relationship is two-way." };
+        }
+
+        function isAntisymmetric() {
+            for (const edge of edges) {
+                if (edge.source !== edge.target && edges.some(e => e.source === edge.target && e.target === edge.source)) {
+                     return { success: false, message: `Fails because both <strong>(${edge.source} → ${edge.target})</strong> and <strong>(${edge.target} → ${edge.source})</strong> exist for distinct people.` };
+                }
+            }
+            return { success: true, message: "Holds true. No two distinct people have a two-way relationship." };
+        }
+
+        function isTransitive() {
+            const edgeSet = new Set(edges.map(e => `${e.source}->${e.target}`));
+            for (const a of nodes) {
+                for (const b of nodes) {
+                    for (const c of nodes) {
+                        if (edgeSet.has(`${a}->${b}`) && edgeSet.has(`${b}->${c}`) && !edgeSet.has(`${a}->${c}`)) {
+                            return { success: false, message: `Fails because there is a path <strong>${a} → ${b} → ${c}</strong>, but no direct relation <strong>(${a} → ${c})</strong> exists.` };
+                        }
+                    }
+                }
+            }
+            return { success: true, message: "Holds true. For any path A → B → C, a direct link A → C exists." };
+        }
+
+
+        function analyze() {
+            parseInput();
+            
+            if (nodes.length === 0) {
+                resultsCard.classList.add('hidden');
+                canvasPlaceholder.classList.remove('hidden');
+                simulation = null;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                return;
+            }
+
+            canvasPlaceholder.classList.add('hidden');
+            resultsCard.classList.remove('hidden');
+
+            const results = {
+                reflexive: isReflexive(),
+                symmetric: isSymmetric(),
+                antisymmetric: isAntisymmetric(),
+                transitive: isTransitive()
+            };
+
+            let outputHTML = '';
+            outputHTML += createResultItem('Reflexive', results.reflexive.success, results.reflexive.message);
+            outputHTML += createResultItem('Symmetric', results.symmetric.success, results.symmetric.message);
+            outputHTML += createResultItem('Antisymmetric', results.antisymmetric.success, results.antisymmetric.message);
+            outputHTML += createResultItem('Transitive', results.transitive.success, results.transitive.message);
+            
+            let conclusion = '';
+            if (results.reflexive.success && results.symmetric.success && results.transitive.success) {
+                conclusion = `<div class="mt-6 p-4 rounded-lg bg-sky-50 text-sky-800 border-l-4 border-sky-500">
+                                <h3 class="font-bold">Conclusion: This is an Equivalence Relation.</h3>
+                                <p>The relation partitions the network into distinct, non-overlapping groups (equivalence classes).</p>
+                             </div>`;
+            } else if (results.reflexive.success && results.antisymmetric.success && results.transitive.success) {
+                conclusion = `<div class="mt-6 p-4 rounded-lg bg-indigo-50 text-indigo-800 border-l-4 border-indigo-500">
+                                <h3 class="font-bold">Conclusion: This is a Partial Order (POSET).</h3>
+                                <p>The relation defines a hierarchy or dependency structure within the network.</p>
+                             </div>`;
+            } else {
+                 conclusion = `<div class="mt-6 p-4 rounded-lg bg-slate-100 text-slate-800 border-l-4 border-slate-500">
+                                <h3 class="font-bold">Conclusion: Standard Relation.</h3>
+                                <p>This relation is not an Equivalence Relation nor a Partial Order.</p>
+                             </div>`;
+            }
+
+            resultsOutput.innerHTML = outputHTML + conclusion;
+            
+            // Setup and run simulation
+            graphNodes = nodes.map(id => ({
+                id,
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                vx: 0,
+                vy: 0
+            }));
+            
+            simulation = new ForceSimulation(graphNodes);
+            animate();
+        }
+
+        // --- EVENT LISTENERS ---
+        analyzeBtn.addEventListener('click', analyze);
+        addSelfLoopsBtn.addEventListener('click', () => {
+            parseInput(); // Get current unique nodes
+            const currentText = relationsInput.value.trim();
+            const newLines = nodes.map(node => `${node}, ${node}`);
+            const uniqueLines = new Set(currentText.split('\n').concat(newLines));
+            relationsInput.value = Array.from(uniqueLines).filter(Boolean).join('\n');
+        });
+
+        window.addEventListener('resize', resizeCanvas);
+
+        // Initial setup
+        resizeCanvas();
+        relationsInput.value = 'Alice, Bob\nBob, Charlie\nAlice, Charlie\n\nDavid, Eve\nEve, David\n\nFrank, Frank\nAlice, Alice\nBob, Bob\nCharlie, Charlie\nDavid, David\nEve, Eve';
+        analyze();
+
+    </script>
+</body>
+</html>
